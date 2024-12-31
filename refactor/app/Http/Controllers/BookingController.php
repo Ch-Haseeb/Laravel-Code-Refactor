@@ -3,10 +3,16 @@
 namespace DTApi\Http\Controllers;
 
 use DTApi\Models\Job;
-use DTApi\Http\Requests;
 use DTApi\Models\Distance;
-use Illuminate\Http\Request;
+use DTApi\Http\Requests\{
+    BookingRequest,
+    EmailRequest,
+    JobHistoryRequest
+};
 use DTApi\Repository\BookingRepository;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * Class BookingController
@@ -33,44 +39,65 @@ class BookingController extends Controller
      * @param Request $request
      * @return mixed
      */
-    public function index(Request $request)
+    public function index(BookingRequest $request): JsonResponse
     {
-        if($user_id = $request->get('user_id')) {
+        try {
+            $user = $request->__authenticatedUser;
 
-            $response = $this->repository->getUsersJobs($user_id);
+            if ($userId = $request->get('user_id')) {
+                $response = $this->repository->getUsersJobs($userId);
+            } elseif (in_array($user->user_type, config('roles.admin_roles'))) {
+                $response = $this->repository->getAll($request);
+            } else {
+                return $this->sendUnauthorized('You do not have permission to view user data.');
+            }
 
+            return $this->successResponse($response);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error fetching bookings', $e);
         }
-        elseif($request->__authenticatedUser->user_type == env('ADMIN_ROLE_ID') || $request->__authenticatedUser->user_type == env('SUPERADMIN_ROLE_ID'))
-        {
-            $response = $this->repository->getAll($request);
-        }
-
-        return response($response);
     }
+
 
     /**
      * @param $id
      * @return mixed
      */
-    public function show($id)
+    public function show(int $id): JsonResponse
     {
-        $job = $this->repository->with('translatorJobRel.user')->find($id);
+        try {
+            $job = $this->repository->with('translatorJobRel.user')->find($id);
 
-        return response($job);
+            if (!$job) {
+                return $this->notFoundResponse('Booking not found');
+            }
+
+            return $this->successResponse($job);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error fetching booking details', $e);
+        }
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function store(Request $request)
+    public function store(BookingRequest $request): JsonResponse
     {
-        $data = $request->all();
+        try {
+            $response = $this->repository->store(
+                $request->user(),
+                $request->validated()
+            );
 
-        $response = $this->repository->store($request->__authenticatedUser, $data);
-
-        return response($response);
-
+            return $this->successResponse(
+                $response,
+                'Booking created successfully',
+                Response::HTTP_CREATED
+            );
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error creating booking', $e);
+        }
     }
 
     /**
@@ -78,198 +105,208 @@ class BookingController extends Controller
      * @param Request $request
      * @return mixed
      */
-    public function update($id, Request $request)
+    public function update(int $id, BookingRequest $request): JsonResponse
     {
-        $data = $request->all();
-        $cuser = $request->__authenticatedUser;
-        $response = $this->repository->updateJob($id, array_except($data, ['_token', 'submit']), $cuser);
+        try {
+            $response = $this->repository->updateJob(
+                $id,
+                $request->except(['_token', 'submit']),
+                $request->user()
+            );
 
-        return response($response);
+            return $this->successResponse($response, 'Booking updated successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error updating booking', $e);
+        }
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function immediateJobEmail(Request $request)
+    public function immediateJobEmail(EmailRequest $request): JsonResponse
     {
-        $adminSenderEmail = config('app.adminemail');
-        $data = $request->all();
+        try {
+            $response = $this->repository->storeJobEmail($request->validated());
+            return $this->successResponse($response, 'Job email sent successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error sending job email', $e);
+        }
+    }
+    /**
+     * @param Request $request
+     * @return mixed
+     */
+    public function getHistory(JobHistoryRequest $request): JsonResponse
+    {
+        try {
+            $userId = $request->get('user_id');
 
-        $response = $this->repository->storeJobEmail($data);
+            if (!$userId) {
+                return $this->errorResponse('User ID is required', null, Response::HTTP_BAD_REQUEST);
+            }
 
-        return response($response);
+            $response = $this->repository->getUsersJobsHistory($userId, $request);
+            return $this->successResponse($response);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error fetching job history', $e);
+        }
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function getHistory(Request $request)
+    public function acceptJob(BookingRequest $request): JsonResponse
     {
-        if($user_id = $request->get('user_id')) {
-
-            $response = $this->repository->getUsersJobsHistory($user_id, $request);
-            return response($response);
+        try {
+            $response = $this->repository->acceptJob(
+                $request->validated(),
+                $request->user()
+            );
+            return $this->successResponse($response, 'Job accepted successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error accepting job', $e);
         }
+    }
 
-        return null;
+    public function acceptJobWithId(BookingRequest $request): JsonResponse
+    {
+        try {
+            $response = $this->repository->acceptJobWithId(
+                $request->get('job_id'),
+                $request->user()
+            );
+            return $this->successResponse($response, 'Job accepted successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error accepting job', $e);
+        }
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function acceptJob(Request $request)
+    public function cancelJob(BookingRequest $request): JsonResponse
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
+        try {
+            $response = $this->repository->cancelJobAjax(
+                $request->validated(),
+                $request->user()
+            );
+            return $this->successResponse($response, 'Job cancelled successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error cancelling job', $e);
+        }
+    }
+    /**
+     * @param Request $request
+     * @return mixed
+     */
 
-        $response = $this->repository->acceptJob($data, $user);
-
-        return response($response);
+    public function endJob(BookingRequest $request): JsonResponse
+    {
+        try {
+            $response = $this->repository->endJob($request->validated());
+            return $this->successResponse($response, 'Job ended successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error ending job', $e);
+        }
     }
 
-    public function acceptJobWithId(Request $request)
+    public function customerNotCall(BookingRequest $request): JsonResponse
     {
-        $data = $request->get('job_id');
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->acceptJobWithId($data, $user);
-
-        return response($response);
+        try {
+            $response = $this->repository->customerNotCall($request->validated());
+            return $this->successResponse($response, 'Customer not call recorded');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error recording customer not call', $e);
+        }
     }
 
     /**
      * @param Request $request
      * @return mixed
      */
-    public function cancelJob(Request $request)
+    public function getPotentialJobs(BookingRequest $request): JsonResponse
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->cancelJobAjax($data, $user);
-
-        return response($response);
+        try {
+            $response = $this->repository->getPotentialJobs($request->user());
+            return $this->successResponse($response);
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error fetching potential jobs', $e);
+        }
     }
 
-    /**
-     * @param Request $request
-     * @return mixed
-     */
-    public function endJob(Request $request)
+    public function distanceFeed(Request $request): JsonResponse
     {
-        $data = $request->all();
+        $data = $request->only(['distance', 'time', 'jobid', 'session_time', 'flagged', 'admincomment', 'manually_handled', 'by_admin']);
 
-        $response = $this->repository->endJob($data);
+        $distance = $data['distance'] ?? '';
+        $time = $data['time'] ?? '';
+        $jobid = $data['jobid'] ?? null;
+        $session = $data['session_time'] ?? '';
+        $admincomment = $data['admincomment'] ?? '';
 
-        return response($response);
+        $flagged = $data['flagged'] === 'true' ? 'yes' : 'no';
 
-    }
 
-    public function customerNotCall(Request $request)
-    {
-        $data = $request->all();
-
-        $response = $this->repository->customerNotCall($data);
-
-        return response($response);
-
-    }
-
-    /**
-     * @param Request $request
-     * @return mixed
-     */
-    public function getPotentialJobs(Request $request)
-    {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->getPotentialJobs($user);
-
-        return response($response);
-    }
-
-    public function distanceFeed(Request $request)
-    {
-        $data = $request->all();
-
-        if (isset($data['distance']) && $data['distance'] != "") {
-            $distance = $data['distance'];
-        } else {
-            $distance = "";
-        }
-        if (isset($data['time']) && $data['time'] != "") {
-            $time = $data['time'];
-        } else {
-            $time = "";
-        }
-        if (isset($data['jobid']) && $data['jobid'] != "") {
-            $jobid = $data['jobid'];
+        if ($flagged === 'yes' && empty($admincomment)) {
+            return response()->json(['error' => 'Please, add a comment'], Response::HTTP_BAD_REQUEST);
         }
 
-        if (isset($data['session_time']) && $data['session_time'] != "") {
-            $session = $data['session_time'];
-        } else {
-            $session = "";
-        }
+        $manuallyHandled = $data['manually_handled'] === 'true' ? 'yes' : 'no';
+        $byAdmin = $data['by_admin'] === 'true' ? 'yes' : 'no';
 
-        if ($data['flagged'] == 'true') {
-            if($data['admincomment'] == '') return "Please, add comment";
-            $flagged = 'yes';
-        } else {
-            $flagged = 'no';
-        }
-        
-        if ($data['manually_handled'] == 'true') {
-            $manually_handled = 'yes';
-        } else {
-            $manually_handled = 'no';
-        }
 
-        if ($data['by_admin'] == 'true') {
-            $by_admin = 'yes';
-        } else {
-            $by_admin = 'no';
-        }
-
-        if (isset($data['admincomment']) && $data['admincomment'] != "") {
-            $admincomment = $data['admincomment'];
-        } else {
-            $admincomment = "";
-        }
         if ($time || $distance) {
-
-            $affectedRows = Distance::where('job_id', '=', $jobid)->update(array('distance' => $distance, 'time' => $time));
+            $affectedRows = Distance::where('job_id', $jobid)->update([
+                'distance' => $distance,
+                'time' => $time,
+            ]);
         }
 
-        if ($admincomment || $session || $flagged || $manually_handled || $by_admin) {
-
-            $affectedRows1 = Job::where('id', '=', $jobid)->update(array('admin_comments' => $admincomment, 'flagged' => $flagged, 'session_time' => $session, 'manually_handled' => $manually_handled, 'by_admin' => $by_admin));
-
+        if ($admincomment || $session || $flagged || $manuallyHandled || $byAdmin) {
+            $affectedRows1 = Job::where('id', $jobid)->update([
+                'admin_comments' => $admincomment,
+                'flagged' => $flagged,
+                'session_time' => $session,
+                'manually_handled' => $manuallyHandled,
+                'by_admin' => $byAdmin,
+            ]);
         }
 
-        return response('Record updated!');
+        return $this->successResponse(null, 'Distance feed updated successfully');
     }
 
-    public function reopen(Request $request)
+    public function reopen(BookingRequest $request): JsonResponse
     {
-        $data = $request->all();
-        $response = $this->repository->reopen($data);
-
-        return response($response);
+        try {
+            $response = $this->repository->reopen($request->validated());
+            return $this->successResponse($response, 'Job reopened successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error reopening job', $e);
+        }
     }
 
-    public function resendNotifications(Request $request)
-    {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
-        $job_data = $this->repository->jobToData($job);
-        $this->repository->sendNotificationTranslator($job, $job_data, '*');
 
-        return response(['success' => 'Push sent']);
+    public function resendNotifications(BookingRequest $request): JsonResponse
+    {
+        try {
+            $jobId = $request->get('jobid');
+            $job = $this->repository->find($jobId);
+
+            if (!$job) {
+                return $this->notFoundResponse('Job not found');
+            }
+
+            $jobData = $this->repository->jobToData($job);
+            $this->repository->sendNotificationTranslator($job, $jobData, '*');
+
+            return $this->successResponse(null, 'Notifications sent successfully');
+        } catch (\Exception $e) {
+            return $this->errorResponse('Error resending notifications', $e);
+        }
     }
 
     /**
@@ -277,18 +314,59 @@ class BookingController extends Controller
      * @param Request $request
      * @return \Illuminate\Contracts\Routing\ResponseFactory|\Symfony\Component\HttpFoundation\Response
      */
-    public function resendSMSNotifications(Request $request)
+    public function resendSMSNotifications(Request $request): JsonResponse
     {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
-        $job_data = $this->repository->jobToData($job);
-
         try {
+            $jobId = $request->get('jobid');
+            $job = $this->repository->find($jobId);
+
+            if (!$job) {
+                return $this->notFoundResponse('Job not found');
+            }
+
             $this->repository->sendSMSNotificationToTranslator($job);
-            return response(['success' => 'SMS sent']);
+            return $this->successResponse(null, 'SMS notifications sent successfully');
         } catch (\Exception $e) {
-            return response(['success' => $e->getMessage()]);
+            return $this->errorResponse('Error sending SMS notifications', $e);
         }
     }
+    private function successResponse($data, ?string $message = null, int $status = Response::HTTP_OK): JsonResponse
+    {
+        $response = [
+            'success' => true,
+            'data' => $data
+        ];
 
+        if ($message) {
+            $response['message'] = $message;
+        }
+
+        return response()->json($response, $status);
+    }
+
+    private function errorResponse(string $message, ?\Exception $exception = null, int $status = Response::HTTP_INTERNAL_SERVER_ERROR): JsonResponse
+    {
+        Log::error($message . ($exception ? ': ' . $exception->getMessage() : ''));
+
+        return response()->json([
+            'success' => false,
+            'message' => $message
+        ], $status);
+    }
+
+    private function sendUnauthorized(string $message = 'Unauthorized access',  int $status =  Response::HTTP_FORBIDDEN): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message,
+        ], $status);
+    }
+
+    private function notFoundResponse(string $message): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => $message
+        ], Response::HTTP_NOT_FOUND);
+    }
 }
